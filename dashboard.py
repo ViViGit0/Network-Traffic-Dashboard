@@ -1,165 +1,133 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from scapy.all import *
+import threading
 import time
 from datetime import datetime
-import threading
+from scapy.all import sniff, IP, TCP, UDP
 import logging
 
-#Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
+# Configurazione del logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 class PacketProcessor:
-    """Process and analyze network packets"""
+    """Classe per catturare e analizzare pacchetti di rete in tempo reale."""
 
     def __init__(self):
-        self.protocol_map = {
-            1: 'ICMP',
-            6: 'TCP',
-            17: 'UDP'
-        }
+        self.protocol_map = {1: "ICMP", 6: "TCP", 17: "UDP"}
         self.packet_data = []
         self.start_time = datetime.now()
         self.packet_count = 0
-        self.lock = threading.lock()
+        self.lock = threading.Lock()
 
     def get_protocol_name(self, protocol_num: int) -> str:
-        """Convert protocol number to name"""
-        return self.protocol_map.get(protocol_num, f'Other({protocol_num})')
-    
+        """Converti il numero di protocollo nel nome corrispondente."""
+        return self.protocol_map.get(protocol_num, f"Other({protocol_num})")
+
     def process_packet(self, packet) -> None:
-        """Process a single packet and extract relevant information"""
+        """Elabora un pacchetto e raccoglie informazioni chiave."""
         try:
             if IP in packet:
                 with self.lock:
                     packet_info = {
-                        'timestamp': datetime.now(),
-                        'source': packet[IP].src,
-                        'destination': packet[IP].dst,
-                        'protocol': self.get_protocol_name(packet[IP].proto),
-                        'size': len(packet),
-                        'time_relative': (datetime.now() - self.start_time).total_seconds()
+                        "timestamp": datetime.now(),
+                        "source": packet[IP].src,
+                        "destination": packet[IP].dst,
+                        "protocol": self.get_protocol_name(packet[IP].proto),
+                        "size": len(packet),
+                        "time_relative": (datetime.now() - self.start_time).total_seconds(),
                     }
 
-                    # Add TCP-specific information
                     if TCP in packet:
-                        packet_info.update({
-                            'src_port': packet[TCP].sport,
-                            'dst_port': packet[TCP].dport,
-                            'tcp_flags': packet[TCP].flags
-                        })
-
-                    # Add UDP-specific information
+                        packet_info.update({"src_port": packet[TCP].sport, "dst_port": packet[TCP].dport, "tcp_flags": packet[TCP].flags})
                     elif UDP in packet:
-                        packet_info.update({
-                            'src_port': packet[UDP].sport,
-                            'dst_port': packet[UDP].dport
-                        })
-                    
+                        packet_info.update({"src_port": packet[UDP].sport, "dst_port": packet[UDP].dport})
+
                     self.packet_data.append(packet_info)
                     self.packet_count += 1
 
-                    # Keep only last 10000 packets to prevent memory issues
+                    # Mantieni solo gli ultimi 10.000 pacchetti per evitare problemi di memoria
                     if len(self.packet_data) > 10000:
                         self.packet_data.pop(0)
         except Exception as e:
-            logger.error(f"Error processing packet: {str(e)}")
-    
+            logger.error(f"Errore nell'elaborazione del pacchetto: {str(e)}")
+
     def get_dataframe(self) -> pd.DataFrame:
-        """Convert packet data to pandas DataFrame"""
+        """Restituisce i dati in formato DataFrame."""
         with self.lock:
             return pd.DataFrame(self.packet_data)
-        
-    def create_visualization(df: pd.DataFrame):
-        """Create all dashboard visualizations"""
-        if len(df)>0:
-            # Protocol distribution
-            protocol_counts = df['protocol'].value_counts()
-            fig_protocol = px.pie(
-                values=protocol_counts.values,
-                names=protocol_counts.index,
-                title="Protocol Distribution"
-            )
-            st.plotly_chart(fig_protocol, use_container_width=True)
 
-            # Packets timeline
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df_grouped = df.groupby(df['timestamp'].dt.floor('S')).size()
-            fig_timeline = px.line(
-                x=df_grouped.index,
-                y=df_grouped.values,
-                title="Packets per Second"
-            )
-            st.plotly_chart(fig_timeline, use_container_width=True)
+def create_visualizations(df: pd.DataFrame):
+    """Genera visualizzazioni per l'analisi del traffico di rete."""
+    if not df.empty:
+        # Distribuzione dei protocolli
+        protocol_counts = df["protocol"].value_counts()
+        fig_protocol = px.pie(values=protocol_counts.values, names=protocol_counts.index, title="Distribuzione dei protocolli")
+        st.plotly_chart(fig_protocol, use_container_width=True)
 
-            # Top source IPs
-            top_sources = df['source'].value_counts().head(10)
-            fig_sources = px.bar(
-                x=top_sources.index,
-                y=top_sources.values,
-                title="Top Source IP Addresses"
-            )
-            st.plotly_chart(fig_sources, use_container_width=True)
+        # Timeline dei pacchetti
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df_grouped = df.groupby(df["timestamp"].dt.floor("S")).size()
+        fig_timeline = px.line(x=df_grouped.index, y=df_grouped.values, title="Pacchetti per secondo")
+        st.plotly_chart(fig_timeline, use_container_width=True)
 
-    def start_packet_capture():
-        """Start packet capture in a separate thread"""
-        processor = PacketProcessor()
+        # IP di origine più frequenti
+        top_sources = df["source"].value_counts().head(10)
+        fig_sources = px.bar(x=top_sources.index, y=top_sources.values, title="Top IP sorgenti")
+        st.plotly_chart(fig_sources, use_container_width=True)
 
-        def capture_packets():
-            sniff(prn=processor.process_packet, store=False)
+def start_packet_capture() -> PacketProcessor:
+    """Avvia la cattura dei pacchetti in un thread separato."""
+    processor = PacketProcessor()
 
-            capture_thread = threading.Thread(target=capture_packets, daemon=True)
-            capture_thread.start()
+    def capture_packets():
+        logger.info("Inizio cattura pacchetti...")
+        sniff(prn=processor.process_packet, store=False)
 
-            return processor
-        
-    def main():
-        """Main function to run the dashboard"""
-        st.set_page_config(page_title="Network Traffic Analysis", layout="wide")
-        st.title("Real-time Network Traffic Analysis")
+    capture_thread = threading.Thread(target=capture_packets, daemon=True)
+    capture_thread.start()
 
-        # Initialize packet processor in session state
-        if 'processor' not in st.session_state:
-            st.session_state.processor = start_packet_capture()
-            st.session_state.start_time = time.time()
+    return processor
 
-        # Create dashboard layout
-        col1, col2 = st.columns(2)
+def main():
+    """Funzione principale per eseguire il dashboard di analisi del traffico di rete."""
+    st.set_page_config(page_title="Analisi del traffico di rete", layout="wide")
+    st.title("Monitoraggio del traffico di rete in tempo reale")
 
-        # Get current data
-        df = st.session_state.processor.get_dataframe()
+    # Inizializza il processore di pacchetti nella sessione
+    if "processor" not in st.session_state:
+        st.session_state.processor = start_packet_capture()
+        st.session_state.start_time = time.time()
 
-        # Display metrics
-        with col1:
-            st.metric("Total Packets", len(df))
-        with col2:
-            duration = time.time() - st.session_state.start_time
-            st.metric("Capture Duration", f"{duration:.2f}s")
+    # Layout della dashboard
+    col1, col2 = st.columns(2)
 
-        # Display visualizations
-        create_visualizations(df)
+    # Recupera i dati attuali
+    df = st.session_state.processor.get_dataframe()
 
-        # Display recent packets
-        st.subheader("Recent Packets")
-        if len(df) > 0:
-            st.dataframe(
-                df.tail(10)[['timestamp', 'source', 'destination', 'protocol', 'size']],
-                use_container_width=True
-            )
+    # Mostra i valori principali
+    with col1:
+        st.metric("Pacchetti Totali", len(df))
+    with col2:
+        duration = time.time() - st.session_state.start_time
+        st.metric("Durata cattura", f"{duration:.2f}s")
 
-        # Add refresh button
-        if st.button('Refresh Data'):
-            st.rerun()
+    # Genera le visualizzazioni
+    create_visualizations(df)
 
-        # Auto refresh
-        time.sleep(2)
+    # Mostra gli ultimi pacchetti catturati
+    st.subheader("Pacchetti Recenti")
+    if not df.empty:
+        st.dataframe(df.tail(10)[["timestamp", "source", "destination", "protocol", "size"]], use_container_width=True)
+
+    # Pulsante di aggiornamento manuale
+    if st.button("Aggiorna Dati"):
         st.rerun()
 
-    
+    # Auto-refresh ogni 2 secondi
+    time.sleep(2)
+    st.rerun()
+
+if __name__ == "__main__":
+    main()
