@@ -1,7 +1,7 @@
 # Network-Traffic-Dashboard
 Real-time Network Traffic Dashboard
 
-Install Npcap in WinPcap API-compatible mode
+Install Npcap 1.80
 Let's run the program with sudo streamlit run dashboard.py or streamlit run dashboard.py(Administrator)
 
 Python==3.12.8
